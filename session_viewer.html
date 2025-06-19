@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Logarte Session Viewer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; background: #f7f9fc; color: #333; }
+    header { background: #2d3748; color: #fff; padding: 1rem; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    main { padding: 1rem; }
+    #drop-zone { margin: 2rem auto; max-width: 600px; border: 2px dashed #a0aec0; border-radius: 8px; padding: 2rem; text-align: center; color: #718096; background: #edf2f7; transition: background 0.2s, border-color 0.2s; }
+    #drop-zone.dragover { background: #ebf8ff; border-color: #3182ce; color: #2a4365; }
+    #controls { display: none; margin: 1rem auto; max-width: 600px; text-align: center; }
+    #searchInput { width: 100%; max-width: 400px; padding: 0.5rem 1rem; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 1rem; }
+    .timestamp { display: inline-block; font-size: 1.1em; font-weight: bold; color: #2a4365; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem auto; max-width: 1000px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    th, td { border: 1px solid #e2e8f0; padding: 0.75rem 1rem; text-align: left; vertical-align: top; }
+    th { background: #e2e8f0; font-weight: 600; }
+    pre { background: #f0f0f0; padding: 0.5rem; border-radius: 4px; overflow-x: auto; margin: 0; font-family: monospace; font-size: 0.9rem; }
+    ul.simple-list { max-width: 800px; margin: 1rem auto; padding: 0; list-style: none; }
+    ul.simple-list li { background: #fff; margin-bottom: 0.5rem; padding: 0.75rem 1rem; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); font-family: monospace; }
+    ul.tree { list-style: none; padding-left: 1rem; border-left: 2px solid #e2e8f0; margin: 1rem auto; max-width: 800px; background: #fff; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .node { cursor: pointer; }
+    .collapsed > ul { display: none; }
+    .toggle::before { content: "\25B6"; display: inline-block; width: 1rem; }
+    .expanded > .toggle::before { content: "\25BC"; }
+    .hidden { display: none !important; }
+    .highlight { background-color: #ffe58f; }
+    button { padding: 0.5rem 1rem; border: none; border-radius: 4px; background: #3182ce; color: #fff; cursor: pointer; font-size: 1rem; }
+    button:hover { background: #2b6cb0; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Logarte Session Viewer</h1>
+</header>
+
+<main>
+  <div id="drop-zone">
+    Drag & drop a <code>.json</code> file here<br>
+    <button id="fileBtn">Or click to select</button>
+    <input id="fileInput" type="file" accept=".json" style="display:none">
+  </div>
+  <div id="controls">
+    <input id="searchInput" placeholder="Search logs…">
+  </div>
+  <div id="output"></div>
+</main>
+
+<script>
+  const dropZone = document.getElementById('drop-zone');
+  const fileInput = document.getElementById('fileInput');
+  const fileBtn = document.getElementById('fileBtn');
+  const controls = document.getElementById('controls');
+  const searchInput = document.getElementById('searchInput');
+  const output = document.getElementById('output');
+  let currentView, tableRows = [], listItems = [], treeItems = [];
+
+  let userKey = null;
+  function askPassphrase() {
+    const raw = prompt("Enter decryption key (used in your Flutter app):", "");
+    if (!raw || !raw.trim()) return null;
+    return CryptoJS.enc.Utf8.parse(raw.trim());
+  }
+
+  function decryptStructuredJson(obj) {
+    if (!obj.encrypted || !obj.iv || !obj.data) return null;
+    if (!userKey) userKey = askPassphrase();
+    if (!userKey) return null;
+    try {
+      const iv = CryptoJS.enc.Base64.parse(obj.iv);
+      const decrypted = CryptoJS.AES.decrypt(obj.data, userKey, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+      return decrypted.toString(CryptoJS.enc.Utf8);
+    } catch (e) {
+      console.error('Decryption error:', e);
+      return null;
+    }
+  }
+
+  function handleFiles(files) {
+    output.innerHTML = '';
+    controls.style.display = 'none';
+    const file = files[0];
+    if (!file) return;
+    file.text().then(text => {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        output.innerHTML = '<p style="color:red;text-align:center;">Invalid JSON format.</p>';
+        return;
+      }
+
+      if (parsed.encrypted) {
+        const decrypted = decryptStructuredJson(parsed);
+        if (!decrypted) {
+          output.innerHTML = '<p style="color:red;text-align:center;">Decryption failed!</p>';
+          return;
+        }
+        try {
+          parsed = JSON.parse(decrypted);
+        } catch {
+          output.innerHTML = '<p style="color:red;text-align:center;">Decryption succeeded, but invalid JSON content.</p>';
+          return;
+        }
+      }
+
+      renderBasedOnType(parsed);
+    });
+  }
+
+  fileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => handleFiles(e.target.files));
+  ['dragenter','dragover'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('dragover'); }));
+  ['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('dragover'); }));
+  dropZone.addEventListener('drop', e => { if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+
+  function renderBasedOnType(data) {
+    controls.style.display = 'block'; searchInput.value = ''; searchInput.focus();
+    if (Array.isArray(data) && data.length && typeof data[0] === 'object') renderTable(data);
+    else if (Array.isArray(data) && data.length && typeof data[0] === 'string') renderStringList(data);
+    else renderTree(data);
+  }
+
+  searchInput.addEventListener('input', () => {
+    const term = searchInput.value.toLowerCase();
+    if (currentView === 'table') filterTable(term);
+    else if (currentView === 'stringList') filterList(term);
+    else filterTree(term);
+  });
+
+  function renderTable(arr) {
+    currentView = 'table';
+    const cols = Object.keys(arr[0]);
+    const tbl = document.createElement('table');
+    const thead = tbl.createTHead(), headRow = thead.insertRow();
+    cols.forEach(c => { const th = document.createElement('th'); th.textContent = c; headRow.appendChild(th); });
+    const tbody = tbl.appendChild(document.createElement('tbody'));
+    arr.forEach(row => {
+      const tr = tbody.insertRow();
+      cols.forEach(c => {
+        const td = tr.insertCell();
+        let v = row[c];
+        if (typeof v === 'string') td.innerHTML = formatDateString(v);
+        else if (v != null && typeof v === 'object') { const pre = document.createElement('pre'); pre.textContent = JSON.stringify(v, null, 2); td.appendChild(pre); }
+        else td.textContent = v != null ? v : '';
+      });
+    });
+    output.innerHTML = ''; output.appendChild(tbl);
+    tableRows = Array.from(tbody.rows);
+  }
+
+  function renderStringList(arr) {
+    currentView = 'stringList';
+    const ul = document.createElement('ul'); ul.className = 'simple-list';
+    arr.forEach(line => {
+      const li = document.createElement('li');
+      li.textContent = line;
+      ul.appendChild(li);
+    });
+    output.innerHTML = ''; output.appendChild(ul);
+    listItems = Array.from(ul.children);
+  }
+
+  function renderTree(obj) {
+    currentView = 'tree';
+    const ul = document.createElement('ul'); ul.className = 'tree';
+    buildNode(obj, ul); output.innerHTML = ''; output.appendChild(ul);
+    treeItems = Array.from(output.querySelectorAll('li'));
+  }
+
+  function buildNode(obj, parent) {
+    Object.entries(obj).forEach(([k, v]) => {
+      const li = document.createElement('li'); parent.appendChild(li);
+      if (v && typeof v === 'object') {
+        li.classList.add('node', 'collapsed');
+        const span = document.createElement('span');
+        span.innerHTML = `<span class="toggle"></span><strong>${k}</strong>`;
+        span.addEventListener('click', () => li.classList.toggle('collapsed') + li.classList.toggle('expanded'));
+        li.appendChild(span);
+        const childUl = document.createElement('ul'); li.appendChild(childUl);
+        buildNode(v, childUl);
+      } else {
+        li.innerHTML = `<strong>${k}</strong>: ${v}`;
+      }
+    });
+  }
+
+  function formatDateString(v) {
+    const date = new Date(v);
+    if (isNaN(date)) return v;
+    const Y = date.getFullYear(), M = (date.getMonth()+1).toString().padStart(2, '0'), D = date.getDate().toString().padStart(2, '0');
+    let h = date.getHours(), ampm = h >= 12 ? 'pm' : 'am'; h = h % 12 || 12;
+    const m = date.getMinutes().toString().padStart(2, '0'), s = date.getSeconds().toString().padStart(2, '0');
+    return `<span class="timestamp">${Y}-${M}-${D} ${h}:${m}:${s} ${ampm}</span>`;
+  }
+
+  function filterTable(term) {
+    tableRows.forEach(row => {
+      let match = false;
+      Array.from(row.cells).forEach(cell => {
+        const text = cell.textContent.toLowerCase();
+        if (term && text.includes(term)) match = true;
+      });
+      row.classList.toggle('hidden', term && !match);
+    });
+  }
+
+  function filterList(term) {
+    listItems.forEach(li => {
+      const text = li.textContent.toLowerCase();
+      li.classList.toggle('hidden', term && !text.includes(term));
+    });
+  }
+
+  function filterTree(term) {
+    treeItems.forEach(li => {
+      const text = li.textContent.toLowerCase();
+      li.classList.toggle('hidden', term && !text.includes(term));
+    });
+  }
+</script>
+
+</body>
+</html>
